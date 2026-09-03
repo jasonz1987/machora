@@ -36,7 +36,7 @@
     "README.md"
   ],
   "bin": {
-    "machora": "./bin/machora.mjs"
+    "machora": "bin/machora.mjs"
   },
   "engines": {
     "node": ">=20"
