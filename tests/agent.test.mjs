@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { after, before, test } from "node:test";
 import { startServer } from "../server/server.mjs";
 import { confirmGitPush } from "../lib/git-hooks.mjs";
+import { assignProject } from "../lib/store.mjs";
 
 const execFileAsync = promisify(execFile);
 let temporaryDirectory; let controllerDirectory; let agentDirectory; let workspace; let server; let origin;
@@ -39,11 +40,17 @@ test("Agent enrolls, creates its workspace, saves credentials, and heartbeats", 
   const loginBin = path.join(temporaryDirectory, "login-bin");
   const loginShell = path.join(temporaryDirectory, "login-shell");
   const fakePnpmArguments = path.join(temporaryDirectory, "fake-pnpm-arguments.txt");
+  const fakePnpmPort = path.join(temporaryDirectory, "fake-pnpm-port.txt");
   await mkdir(loginBin);
-  await writeFile(path.join(loginBin, "pnpm"), "#!/bin/sh\nif [ \"${1:-}\" = \"--version\" ]; then echo 10.23.0; exit 0; fi\nif [ \"${1:-}\" = \"run\" ] && [ \"${2:-}\" = \"dev\" ]; then printf '%s\\n' \"$@\" > \"$MACHORA_FAKE_PNPM_ARGUMENTS\"; sleep 15; exit 0; fi\necho \"unexpected fake pnpm invocation: $*\" >&2\nexit 2\n");
+  await writeFile(path.join(loginBin, "pnpm"), "#!/bin/sh\nif [ \"${1:-}\" = \"--version\" ]; then echo 10.23.0; exit 0; fi\nif [ \"${1:-}\" = \"run\" ] && [ \"${2:-}\" = \"dev\" ]; then printf '%s\\n' \"$@\" > \"$MACHORA_FAKE_PNPM_ARGUMENTS\"; printf '%s' \"${PORT:-}\" > \"$MACHORA_FAKE_PORT\"; sleep 15; exit 0; fi\necho \"unexpected fake pnpm invocation: $*\" >&2\nexit 2\n");
   await writeFile(loginShell, "#!/bin/sh\nprintf '\\0__MACHORA_LOGIN_ENV_8E4C2029__\\0'\nprintf 'PATH=%s:%s\\0' \"$MACHORA_AGENT_LOGIN_PATH\" \"$PATH\"\n");
+  const gitPath = (await execFileAsync("sh", ["-c", "command -v git"])).stdout.trim();
+  await symlink(process.execPath, path.join(loginBin, "node"));
+  await symlink(gitPath, path.join(loginBin, "git"));
+  await symlink("/bin/sh", path.join(loginBin, "sh"));
+  await symlink("/bin/sleep", path.join(loginBin, "sleep"));
   await chmod(path.join(loginBin, "pnpm"), 0o700); await chmod(loginShell, 0o700);
-  const environment = { ...process.env, MACHORA_AGENT_DIR: agentDirectory, MACHORA_AGENT_LOGIN_PATH: loginBin, MACHORA_FAKE_PNPM_ARGUMENTS: fakePnpmArguments, SHELL: loginShell };
+  const environment = { ...process.env, PATH: loginBin, MACHORA_AGENT_DIR: agentDirectory, MACHORA_AGENT_LOGIN_PATH: loginBin, MACHORA_FAKE_PNPM_ARGUMENTS: fakePnpmArguments, MACHORA_FAKE_PORT: fakePnpmPort, SHELL: loginShell };
   const agentFile = path.resolve("agent/agent.mjs");
   await execFileAsync(process.execPath, [agentFile, "enroll", "--controller", origin, "--token", enrollment.enrollment.token], { env: environment });
   await stat(workspace);
@@ -52,7 +59,7 @@ test("Agent enrolls, creates its workspace, saves credentials, and heartbeats", 
   await execFileAsync(process.execPath, [agentFile, "run", "--once"], { env: environment });
   const hosts = await fetch(`${origin}/api/hosts`).then((response) => response.json());
   const host = hosts.hosts.find((item) => item.alias === "agent-e2e");
-  assert.equal(host.status, "online"); assert.equal(host.workspace, workspace); assert.ok(host.capabilities.includes("node")); assert.equal(host.agentVersion, "0.8.1");
+  assert.equal(host.status, "online"); assert.equal(host.workspace, workspace); assert.ok(host.capabilities.includes("node")); assert.equal(host.agentVersion, "0.9.0");
   const node = host.tools.find((tool) => tool.id === "node");
   assert.equal(node.name, "Node.js"); assert.match(node.version, /^\d+\.\d+\.\d+/);
   assert.equal(host.tools.find((tool) => tool.id === "pnpm")?.version, "10.23.0");
@@ -143,6 +150,25 @@ test("Agent enrolls, creates its workspace, saves credentials, and heartbeats", 
   assert.equal(devJob.job.status, "succeeded", devJob.job.output || devJob.job.error);
   assert.match(devJob.job.result.previewUrl, /:3000\/$/);
   assert.deepEqual((await readFile(fakePnpmArguments, "utf8")).trim().split("\n"), ["run", "dev", "--hostname", "0.0.0.0", "--port", "3000"]);
+  assert.equal(await readFile(fakePnpmPort, "utf8"), "3000");
+
+  const currentCommit = (await execFileAsync("git", ["-C", source, "rev-parse", "--short=12", "HEAD"])).stdout.trim();
+  await assignProject({
+    name: "source-project", localPath: assigned.project.localPath, branch: "main", commit: currentCommit, gitRemote: assigned.project.gitRemote,
+    projectType: "Umi", packageManager: "pnpm", devPort: 8000, frameworks: ["Umi"], languages: ["JavaScript"],
+    commands: { install: "node -e \"console.log('dependencies ready')\"", dev: "pnpm run dev" },
+  }, host.id);
+  const umiDevResponse = await fetch(`${origin}/api/projects/${assigned.project.id}/run`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ operation: "dev" }),
+  });
+  const queuedUmiDev = await umiDevResponse.json();
+  assert.equal(umiDevResponse.status, 202, queuedUmiDev.error);
+  await execFileAsync(process.execPath, [agentFile, "run", "--once"], { env: environment, timeout: 30_000 });
+  const umiDevJob = await fetch(`${origin}/api/jobs/${queuedUmiDev.job.id}`).then((response) => response.json());
+  assert.equal(umiDevJob.job.status, "succeeded", umiDevJob.job.output || umiDevJob.job.error);
+  assert.match(umiDevJob.job.result.previewUrl, /:8000\/$/);
+  assert.deepEqual((await readFile(fakePnpmArguments, "utf8")).trim().split("\n"), ["run", "dev"]);
+  assert.equal(await readFile(fakePnpmPort, "utf8"), "8000");
 
   const taggedSha = (await execFileAsync("git", ["-C", source, "rev-parse", "HEAD"])).stdout.trim();
   await execFileAsync("git", ["-C", source, "tag", "v1.0.0", taggedSha]);

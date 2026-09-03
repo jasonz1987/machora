@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { after, before, test } from "node:test";
-import { confirmGitPush, installProjectGitHook, parsePrePushInput } from "../lib/git-hooks.mjs";
-import { assignProject, completeEnrollment, createEnrollment, updateProjectAutomations } from "../lib/store.mjs";
+import { confirmGitPush, dispatchGitPushConfirmation, installProjectGitHook, parsePrePushInput, projectGitHookStatus, uninstallProjectGitHook } from "../lib/git-hooks.mjs";
+import { assignProject, completeEnrollment, createEnrollment, listJobs, updateProjectAutomations } from "../lib/store.mjs";
 
 const execFileAsync = promisify(execFile);
 let temporaryDirectory;
@@ -51,6 +51,9 @@ test("installs a managed pre-push hook, preserves an existing hook, and confirms
   const source = await readFile(hookPath, "utf8");
   assert.equal(installed.hook.status, "installed"); assert.equal(installed.hook.originalPreserved, true);
   assert.match(source, /machora managed pre-push hook/);
+  assert.match(source, /hook dispatch-push/);
+  assert.match(source, /MACHORA_HOOK_DIR/);
+  assert.doesNotMatch(source, /\bnohup\b/);
   assert.equal(await readFile(path.join(hooksDirectory, "pre-push.machora-original"), "utf8"), "#!/bin/sh\necho existing-hook\n");
   assert.ok(((await stat(hookPath)).mode & 0o100) !== 0);
   const syntax = spawnSync("sh", ["-n", hookPath], { encoding: "utf8" });
@@ -61,6 +64,44 @@ test("installs a managed pre-push hook, preserves an existing hook, and confirms
   const confirmed = await confirmGitPush({ projectId: project.id, repository, remote: "origin", inputPath, timeoutMs: 1000 });
   assert.equal(confirmed.confirmed, 1); assert.equal(confirmed.jobs.length, 1);
   assert.equal(confirmed.jobs[0].trigger.remote, "origin"); assert.equal(confirmed.jobs[0].trigger.sha, sha);
+
+  await writeFile(path.join(repository, "README.md"), "hook test\nactual push\n");
+  await execFileAsync("git", ["-C", repository, "add", "README.md"]);
+  await execFileAsync("git", ["-C", repository, "commit", "-m", "exercise managed hook"]);
+  const pushedSha = (await execFileAsync("git", ["-C", repository, "rev-parse", "HEAD"])).stdout.trim();
+  await execFileAsync("git", ["-C", repository, "push", "origin", "main"]);
+  let dispatchedJob;
+  for (let attempt = 0; attempt < 30 && !dispatchedJob; attempt += 1) {
+    dispatchedJob = (await listJobs()).find((job) => job.trigger?.sha === pushedSha);
+    if (!dispatchedJob) await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(dispatchedJob, "the managed hook should confirm the real push and queue its Job");
+
+  const status = await projectGitHookStatus(project);
+  assert.equal(status.status, "installed");
+  const removed = await uninstallProjectGitHook(project);
+  assert.equal(removed.restoredOriginal, true);
+  assert.equal(await readFile(hookPath, "utf8"), "#!/bin/sh\necho existing-hook\n");
+});
+
+test("dispatches push confirmation as a detached cross-platform Node process", async () => {
+  const inputPath = path.join(temporaryDirectory, "dispatch-input.txt");
+  const logPath = path.join(temporaryDirectory, "hooks", "dispatch.log");
+  await writeFile(inputPath, "push input\n");
+  const calls = [];
+  const child = { pid: 1234, on() {}, unrefCalled: false, unref() { this.unrefCalled = true; } };
+  const result = await dispatchGitPushConfirmation({
+    projectId: "project-id", repository: "C:\\Code\\project", remote: "origin",
+    inputPath, logPath, node: "C:\\Program Files\\nodejs\\node.exe", cli: "C:\\Machora\\machora.mjs",
+    configDirectory: "C:\\Machora", spawnImpl: (...args) => { calls.push(args); return child; },
+  });
+  assert.equal(result.pid, 1234);
+  assert.equal(child.unrefCalled, true);
+  assert.equal(calls[0][0], "C:\\Program Files\\nodejs\\node.exe");
+  assert.ok(calls[0][1].includes("confirm-push"));
+  assert.equal(calls[0][2].detached, true);
+  assert.equal(calls[0][2].windowsHide, true);
+  assert.equal(calls[0][2].env.MACHORA_CONFIG_DIR, "C:\\Machora");
 });
 
 test("parses branch and tag updates while ignoring deletes and unsupported refs", () => {

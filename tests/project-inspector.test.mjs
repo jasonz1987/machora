@@ -50,3 +50,33 @@ test("detects a Flutter project and proposes safe starter commands", async () =>
   assert.equal(project.commands.build, "");
   assert.match(project.commands.dev, /web-server/); assert.equal(project.devPort, 3000);
 });
+
+test("detects Umi separately from generic React and uses its framework default port", async () => {
+  const umiRepository = path.join(temporaryDirectory, "sample-umi-app");
+  await mkdir(umiRepository);
+  execFileSync("git", ["init", "-b", "main", umiRepository]);
+  execFileSync("git", ["-C", umiRepository, "config", "user.email", "machora@example.test"]);
+  execFileSync("git", ["-C", umiRepository, "config", "user.name", "machora test"]);
+  await writeFile(path.join(umiRepository, "package.json"), JSON.stringify({ scripts: { dev: "max dev" }, dependencies: { "@umijs/max": "4.3.6", react: "18.3.1" } }));
+  await writeFile(path.join(umiRepository, "pnpm-workspace.yaml"), "onlyBuiltDependencies:\n  - esbuild\n");
+  execFileSync("git", ["-C", umiRepository, "add", "package.json", "pnpm-workspace.yaml"]);
+  execFileSync("git", ["-C", umiRepository, "commit", "-m", "initial"]);
+  const project = await inspectLocalProject(umiRepository);
+  assert.equal(project.projectType, "Umi");
+  assert.equal(project.devPort, 8000);
+  assert.deepEqual(project.frameworks, ["Umi"]);
+});
+
+test("does not force a port for an unrecognized React setup", async () => {
+  const reactRepository = path.join(temporaryDirectory, "sample-react-app");
+  await mkdir(reactRepository);
+  execFileSync("git", ["init", "-b", "main", reactRepository]);
+  execFileSync("git", ["-C", reactRepository, "config", "user.email", "machora@example.test"]);
+  execFileSync("git", ["-C", reactRepository, "config", "user.name", "machora test"]);
+  await writeFile(path.join(reactRepository, "package.json"), JSON.stringify({ scripts: { dev: "custom-dev-server" }, dependencies: { react: "19.0.0" } }));
+  execFileSync("git", ["-C", reactRepository, "add", "package.json"]);
+  execFileSync("git", ["-C", reactRepository, "commit", "-m", "initial"]);
+  const project = await inspectLocalProject(reactRepository);
+  assert.equal(project.projectType, "React");
+  assert.equal(project.devPort, null);
+});

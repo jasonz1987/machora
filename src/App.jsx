@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, AlertTriangle, Apple, Check, CheckCircle2, ChevronDown, CircleX, Clock3, Code2, Copy, ExternalLink, FolderGit2, FolderOpen, GitBranch, GitMerge, Laptop, ListChecks, MoreHorizontal, Play, Plus, RefreshCw, Save, ScanSearch, Server, ShieldAlert, Sparkles, SquareTerminal, Terminal, Trash2, Workflow, X } from "lucide-react";
+import { Activity, AlertTriangle, Apple, Check, CheckCircle2, ChevronDown, CircleX, Clock3, Code2, Copy, ExternalLink, FolderGit2, FolderOpen, GitBranch, GitMerge, Github, Laptop, ListChecks, MoreHorizontal, Play, Plus, RefreshCw, Save, ScanSearch, Server, ShieldAlert, Sparkles, SquareTerminal, Terminal, Trash2, Workflow, X } from "lucide-react";
 
 const EMPTY_FORM = { alias: "", os: "auto", workspace: "~/Code" };
 const EMPTY_PROJECT_FORM = { localPath: "~/Code/", host: "" };
-const LATEST_AGENT_VERSION = "0.8.1";
+const MACHORA_VERSION = typeof __MACHORA_VERSION__ === "string" ? __MACHORA_VERSION__ : "development";
+const LATEST_AGENT_VERSION = MACHORA_VERSION;
 
 function initialDashboardLocation() {
   if (typeof window === "undefined") return { view: "hosts", jobId: null };
@@ -163,6 +164,13 @@ export function App() {
     setHostCommandId(null);
   }, []);
 
+  const handleJobQueued = useCallback((job) => {
+    knownJobStates.current.set(job.id, job.status);
+    setProjectSetupId(null);
+    setJobToast(job);
+    void Promise.all([loadProjects(), loadJobs()]);
+  }, [loadJobs, loadProjects]);
+
   const onlineCount = useMemo(() => hosts.filter((host) => host.status === "online").length, [hosts]);
   const setupProject = projects.find((project) => project.id === projectSetupId);
   const setupJob = jobs.find((job) => job.id === jobSetupId);
@@ -198,9 +206,15 @@ export function App() {
         </section> : view === "projects" ? <ProjectsRegion projects={projects} onAssign={openProjectPanel} onDelete={deleteProject} onOpen={(project) => { setError(""); setProjectSetupId(project.id); }} /> : <JobsRegion jobs={jobs} onOpen={(job) => setJobSetupId(job.id)} />}
         {panelOpen ? <EnrollmentPanel form={form} setForm={setForm} enrollment={enrollment} error={error} submitting={submitting} onSubmit={createPairing} onClose={() => setPanelOpen(false)} /> : null}
         {projectPanelOpen ? <ProjectAssignmentPanel form={projectForm} setForm={setProjectForm} hosts={hosts} error={error} submitting={submitting} onSubmit={assignProject} onClose={() => setProjectPanelOpen(false)} /> : null}
-        {setupProject ? <ProjectSetupPanel project={setupProject} controller={controller} onRefresh={async () => { await loadProjects(); await loadJobs(); }} onOpenJob={(jobId) => { setProjectSetupId(null); setView("jobs"); setJobSetupId(jobId); }} onClose={() => setProjectSetupId(null)} /> : null}
+        {setupProject ? <ProjectSetupPanel project={setupProject} controller={controller} onRefresh={async () => { await loadProjects(); await loadJobs(); }} onQueued={handleJobQueued} onOpenJob={(jobId) => { setProjectSetupId(null); setView("jobs"); setJobSetupId(jobId); }} onClose={() => setProjectSetupId(null)} /> : null}
         {setupJob ? <JobDetailsPanel job={setupJob} onClose={() => setJobSetupId(null)} /> : null}
       </main>
+      <footer className="app-footer">
+        <span>machora v{MACHORA_VERSION}</span>
+        <a className="github-link" href="https://github.com/jasonz1987/machora" target="_blank" rel="noopener noreferrer" aria-label="View Machora on GitHub (opens in a new tab)" title="View Machora on GitHub">
+          <Github size={17} strokeWidth={1.8} aria-hidden="true" />
+        </a>
+      </footer>
       {jobToast ? <JobToast job={jobToast} onOpen={() => { setView("jobs"); setJobSetupId(jobToast.id); setJobToast(null); }} onClose={() => setJobToast(null)} /> : null}
       {anyOverlayOpen ? <button className="panel-scrim" type="button" aria-label="Close dialog or panel" onClick={closePanels} /> : null}
       {commandHost ? <HostCommandDialog host={commandHost} controller={controller} onQueued={() => { setHostCommandId(null); loadHosts(); loadJobs(); }} onClose={() => setHostCommandId(null)} /> : null}
@@ -398,9 +412,15 @@ function JobDetailsPanel({ job, onClose }) {
 
 function JobToast({ job, onOpen, onClose }) {
   const success = job.status === "succeeded";
+  const queued = ["queued", "dispatched", "running"].includes(job.status);
   const subject = job.project?.name || job.host?.alias || "Task machine";
   const operation = job.type === "host-command" ? "remote command" : job.operation || "sync";
-  return <div className={`job-toast ${success ? "success" : "failed"}`} role="status"><span>{success ? <CheckCircle2 size={18} /> : <CircleX size={18} />}</span><div><strong>{subject} · {operation}</strong><small>{success ? job.result?.previewUrl ? "Preview is ready" : "Job completed" : job.error || "Job failed"}</small></div><button type="button" onClick={onOpen}>View</button><button className="toast-close" type="button" aria-label="Dismiss notification" onClick={onClose}><X size={14} /></button></div>;
+  const detail = queued
+    ? `Job ${job.id.slice(0, 8)} submitted to ${job.host?.alias || "the task machine"}`
+    : success
+      ? job.result?.previewUrl ? "Preview is ready" : "Job completed"
+      : job.error || "Job failed";
+  return <div className={`job-toast ${queued ? "queued" : success ? "success" : "failed"}`} role="status" aria-live="polite"><span>{queued || success ? <CheckCircle2 size={18} /> : <CircleX size={18} />}</span><div><strong>{subject} · {operation}{queued ? " queued" : ""}</strong><small>{detail}</small></div><button type="button" onClick={onOpen}>View Job</button><button className="toast-close" type="button" aria-label="Dismiss notification" onClick={onClose}><X size={14} /></button></div>;
 }
 
 function ProjectEmptyState({ onAssign }) {
@@ -445,8 +465,11 @@ function ProjectAssignmentPanel({ form, setForm, hosts, error, submitting, onSub
   );
 }
 
-function ProjectSetupPanel({ project, controller, onRefresh, onOpenJob, onClose }) {
+function ProjectSetupPanel({ project, controller, onRefresh, onQueued, onOpenJob, onClose }) {
   const [commands, setCommands] = useState(project.commands || {});
+  const [devPort, setDevPort] = useState(project.devPort ? String(project.devPort) : "");
+  const [devPortSource, setDevPortSource] = useState(project.devPortSource === "custom" ? "custom" : "detected");
+  const [portTouched, setPortTouched] = useState(false);
   const [automationRules, setAutomationRules] = useState(project.automations?.rules || []);
   const [saving, setSaving] = useState(false);
   const [savingAutomations, setSavingAutomations] = useState(false);
@@ -456,7 +479,12 @@ function ProjectSetupPanel({ project, controller, onRefresh, onOpenJob, onClose 
   const [panelError, setPanelError] = useState("");
   const [activeJobId, setActiveJobId] = useState("");
   const [jobResult, setJobResult] = useState(null);
-  useEffect(() => { setCommands(project.commands || {}); }, [project.id, project.commands]);
+  useEffect(() => {
+    setCommands(project.commands || {});
+    setDevPort(project.devPort ? String(project.devPort) : "");
+    setDevPortSource(project.devPortSource === "custom" ? "custom" : "detected");
+    setPortTouched(false);
+  }, [project.id, project.commands, project.devPort, project.devPortSource]);
   useEffect(() => { setAutomationRules(project.automations?.rules || []); }, [project.id]);
   useEffect(() => {
     if (!activeJobId) return undefined;
@@ -477,7 +505,7 @@ function ProjectSetupPanel({ project, controller, onRefresh, onOpenJob, onClose 
     : "";
 
   async function saveCommands(event) {
-    event.preventDefault(); setSaving(true); setMessage(""); setPanelError("");
+    event.preventDefault(); setPortTouched(true); setSaving(true); setMessage(""); setPanelError("");
     try {
       await persistCommands();
       setMessage("Commands saved"); await onRefresh();
@@ -485,20 +513,25 @@ function ProjectSetupPanel({ project, controller, onRefresh, onOpenJob, onClose 
   }
 
   async function persistCommands() {
-    const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}/commands`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ commands }) });
+    if (portError) throw new Error(portError);
+    const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}/commands`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ commands, devPort: devPortSource === "custom" ? Number(devPort) : null, devPortSource }),
+    });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not save commands");
     return data.project;
   }
 
   async function runOperation(operation) {
-    setRunningOperation(operation); setMessage(""); setPanelError("");
+    setPortTouched(true); setRunningOperation(operation); setMessage(""); setPanelError("");
     try {
       await persistCommands();
       const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}/run`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ operation }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `Could not queue ${operation}`);
-      setJobResult(null); setActiveJobId(data.job.id); setMessage(`${operation} queued · ${data.job.id.slice(0, 8)}`); await onRefresh();
+      onQueued(data.job);
     } catch (requestError) { setPanelError(requestError.message); } finally { setRunningOperation(""); }
   }
 
@@ -508,7 +541,7 @@ function ProjectSetupPanel({ project, controller, onRefresh, onOpenJob, onClose 
       const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}/sync`, { method: "POST" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not queue remote sync");
-      setJobResult(null); setActiveJobId(data.job.id); setMessage(`Git sync queued · ${data.job.id.slice(0, 8)}`); await onRefresh();
+      onQueued(data.job);
     } catch (requestError) { setPanelError(requestError.message); } finally { setSyncing(false); }
   }
 
@@ -538,6 +571,16 @@ function ProjectSetupPanel({ project, controller, onRefresh, onOpenJob, onClose 
 
   const operationOptions = ["install", "test", "build", "dev", "deploy"].filter((operation) => Boolean(commands[operation]?.trim()));
   const hookReady = project.hook?.status === "installed" && automationRules.length > 0;
+  const parsedPort = Number(devPort);
+  const portError = devPortSource === "custom" && (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535)
+    ? "Enter a port from 1 to 65535, or switch back to Auto."
+    : "";
+
+  function useDetectedPort() {
+    setDevPort(project.detectedDevPort ? String(project.detectedDevPort) : "");
+    setDevPortSource("detected");
+    setPortTouched(false);
+  }
 
   return (
     <aside className="enrollment-panel project-setup-panel" aria-label={`${project.name} setup`}>
@@ -560,9 +603,29 @@ function ProjectSetupPanel({ project, controller, onRefresh, onOpenJob, onClose 
                 {syncing || project.remoteStatus === "syncing" ? <RefreshCw className="spin-icon" size={13} /> : <GitMerge size={13} />}
               </button>
             </div>
-            {["install", "test", "build", "dev", "deploy"].map((operation) => <div className="command-row" key={operation}><label htmlFor={`project-command-${operation}`}>{operation}</label><input id={`project-command-${operation}`} value={commands[operation] || ""} placeholder={`No ${operation} command detected`} onChange={(event) => setCommands({ ...commands, [operation]: event.target.value })} /><button className="command-run" type="button" aria-label={`Run ${operation} on task machine`} title={`Queue ${operation}: Git sync → dependencies → command`} disabled={!commands[operation] || Boolean(runningOperation) || syncing} onClick={() => runOperation(operation)}>{runningOperation === operation ? <RefreshCw className="spin-icon" size={13} /> : <Play size={13} />}</button></div>)}
+            {["install", "test", "build", "dev", "deploy"].map((operation) => <div className="command-row" key={operation}><label htmlFor={`project-command-${operation}`}>{operation}</label><input id={`project-command-${operation}`} value={commands[operation] || ""} placeholder={`No ${operation} command detected`} onChange={(event) => setCommands({ ...commands, [operation]: event.target.value })} /><button className="command-run" type="button" aria-label={`Run ${operation} on task machine`} title={`Queue ${operation}: Git sync → dependencies → command`} disabled={!commands[operation] || Boolean(runningOperation) || syncing || Boolean(portError)} onClick={() => runOperation(operation)}>{runningOperation === operation ? <RefreshCw className="spin-icon" size={13} /> : <Play size={13} />}</button></div>)}
+            <div className="preview-port-setting">
+              <div className="preview-port-heading"><label htmlFor="project-dev-port">Preview port</label><span className={devPortSource}>{devPortSource === "custom" ? "Custom" : "Auto"}</span></div>
+              <div className="preview-port-control">
+                <input
+                  id="project-dev-port"
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  max="65535"
+                  value={devPort}
+                  placeholder={project.detectedDevPort ? String(project.detectedDevPort) : "Project default"}
+                  aria-invalid={Boolean(portTouched && portError)}
+                  aria-describedby="project-dev-port-help"
+                  onBlur={() => setPortTouched(true)}
+                  onChange={(event) => { setDevPort(event.target.value); setDevPortSource("custom"); }}
+                />
+                <button type="button" disabled={devPortSource === "detected"} onClick={useDetectedPort}>Use auto</button>
+              </div>
+              <p id="project-dev-port-help" className={portTouched && portError ? "port-error" : ""}>{portTouched && portError ? portError : project.detectedDevPort ? `${project.projectType} default: ${project.detectedDevPort}. Change it only when this project needs another port.` : "Machora will not inject PORT unless you set one."}</p>
+            </div>
             <div className="pipeline-hint"><Workflow size={13} /><span>Sync only updates Git. Every other operation runs Git sync → dependencies → command.</span></div>
-            <button className="secondary-button setup-action" type="submit" disabled={saving}><Save size={15} />{saving ? "Saving…" : "Save commands"}</button>
+            <button className="secondary-button setup-action" type="submit" disabled={saving || Boolean(portError)}><Save size={15} />{saving ? "Saving…" : "Save commands"}</button>
           </form>
         </SetupStep>
         <SetupStep icon={GitBranch} number="03" title="Git triggers" state={hookReady ? "complete" : "active"}>

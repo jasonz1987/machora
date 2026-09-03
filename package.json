@@ -1,6 +1,6 @@
 {
   "name": "machora",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Orchestrate Git-native development jobs across your Macs, Windows PCs, and Linux machines.",
   "author": {
     "name": "Jason.z",
@@ -50,6 +50,7 @@
     "machora": "node bin/machora.mjs",
     "rdev": "node bin/rdev.mjs",
     "test": "node --test tests/store.test.mjs tests/controller.test.mjs tests/controller-service.test.mjs tests/server.test.mjs tests/agent.test.mjs tests/git-hooks.test.mjs tests/project-inspector.test.mjs tests/project-skill.test.mjs tests/native-dialog.test.mjs tests/dashboard.test.mjs tests/notifier.test.mjs",
+    "test:windows": "node --test --test-concurrency=1 tests/store.test.mjs tests/controller.test.mjs tests/controller-service.test.mjs tests/server.test.mjs tests/git-hooks.test.mjs tests/project-inspector.test.mjs tests/project-skill.test.mjs tests/native-dialog.test.mjs tests/dashboard.test.mjs tests/notifier.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },
   "dependencies": {

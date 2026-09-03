@@ -23,6 +23,15 @@ test("opens the dashboard with the platform browser command", () => {
   assert.deepEqual(calls[0][1], ["http://127.0.0.1:4178/"]);
 });
 
+test("opens the dashboard through the Windows shell without showing a console", () => {
+  const calls = [];
+  const launch = (...argumentsList) => { calls.push(argumentsList); return { unref() {} }; };
+  openExternal("http://127.0.0.1:4178", { platform: "win32", spawn: launch });
+  assert.equal(calls[0][0], "cmd");
+  assert.deepEqual(calls[0][1], ["/c", "start", "", "http://127.0.0.1:4178/"]);
+  assert.equal(calls[0][2].windowsHide, true);
+});
+
 test("waits for the controller health endpoint", async () => {
   let calls = 0;
   await waitForDashboard("http://127.0.0.1:4178", {

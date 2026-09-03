@@ -3,9 +3,18 @@ import { addHost, assignProject, createEnrollment, getJob, listHosts, listJobs, 
 import { enrollmentCommands } from "../lib/controller.mjs";
 import { inspectLocalProject } from "../lib/project-inspector.mjs";
 import { installProjectSkill } from "../lib/project-skill.mjs";
-import { confirmGitPush, installProjectGitHook } from "../lib/git-hooks.mjs";
+import { confirmGitPush, dispatchGitPushConfirmation, installProjectGitHook, projectGitHookStatus, uninstallProjectGitHook } from "../lib/git-hooks.mjs";
 import { findLanAddress, startServer } from "../server/server.mjs";
-import { controllerServiceStatus, installControllerService, restartControllerService, startControllerService, stopControllerService } from "../lib/controller-service.mjs";
+import {
+  controllerFirewallStatus,
+  controllerServiceStatus,
+  installControllerFirewall,
+  installControllerService,
+  removeControllerFirewall,
+  restartControllerService,
+  startControllerService,
+  stopControllerService,
+} from "../lib/controller-service.mjs";
 import { dashboardUrl, openExternal, waitForDashboard } from "../lib/dashboard.mjs";
 
 const [, , ...args] = process.argv;
@@ -14,7 +23,7 @@ try { await main(args); } catch (error) { console.error(`Machora: ${error.messag
 async function main(argv) {
   const [command, action] = argv;
   if (!command || ["help", "--help", "-h"].includes(command)) return printHelp();
-  if (["--version", "-v"].includes(command)) return console.log("0.8.1");
+  if (["--version", "-v"].includes(command)) return console.log("0.9.0");
   if (["dashboard", "console"].includes(command)) {
     const options = parseOptions(argv.slice(1));
     let status = await controllerServiceStatus();
@@ -32,7 +41,8 @@ async function main(argv) {
       || process.env.RDEV_CONFIG_DIR;
     const installed = await installControllerService({
       port: options.port, host: options.host, advertise: options.advertise,
-      migrateFrom, force: Boolean(options.force),
+      migrateFrom, force: Boolean(options.force), serviceType: options.service,
+      winswPath: options.winsw, firewall: Boolean(options.firewall),
     });
     process.env.MACHORA_CONFIG_DIR = installed.configDir;
     delete process.env.RDEV_CONFIG_DIR;
@@ -44,8 +54,11 @@ async function main(argv) {
       configuredProjects += 1;
     }
     console.log(`Installed Machora controller service (${installed.serviceLabel})`);
+    console.log(`Service: ${controllerServiceDescription(installed)}`);
     console.log(`CLI: ${installed.commandCliPath}`);
     if (installed.commandCliPath !== installed.userCliPath) console.log(`User CLI copy: ${installed.userCliPath}`);
+    if (installed.serviceType === "scheduled-task" && !installed.pathUpdated) console.log(`PATH warning: add ${installed.binDir} to your user PATH manually`);
+    if (installed.firewall?.installed) console.log(`Firewall: ${installed.firewall.name} · TCP ${installed.firewall.port} · ${installed.firewall.profile || "Private,Domain"}`);
     console.log(`Config: ${installed.configDir}`);
     console.log(`Logs: ${installed.logsDir}`);
     console.log(`Configured ${configuredProjects} project${configuredProjects === 1 ? "" : "s"} with local-only Machora policy`);
@@ -55,7 +68,13 @@ async function main(argv) {
   if (command === "controller" && action === "status") {
     const status = await controllerServiceStatus();
     console.log(status.installed ? `Machora controller is ${status.running ? "running" : "installed but stopped"}` : "Machora controller is not installed");
-    if (status.installed) { console.log(`Service: ${status.plistPath}`); console.log(`Logs: ${status.logsDir}`); }
+    if (status.installed) {
+      console.log(`Service: ${controllerServiceDescription(status)}`);
+      console.log(`Port: ${status.port} · ${status.portOpen ? (status.healthy ? "Machora is responding" : "occupied by another service") : "not listening"}`);
+      if (status.platform === "win32") console.log(`Firewall: ${status.firewall?.installed ? `${status.firewall.enabled ? "enabled" : "disabled"} · ${status.firewall.name} · TCP ${status.firewall.port || status.port}` : "not configured"}`);
+      console.log(`Logs: ${status.logsDir}`);
+      if (status.detail) console.log(`Detail: ${status.detail}`);
+    }
     return;
   }
   if (command === "controller" && action === "restart") {
@@ -72,6 +91,27 @@ async function main(argv) {
     await stopControllerService();
     console.log("Machora controller stopped");
     return;
+  }
+  if (command === "controller" && action === "firewall") {
+    const firewallAction = argv[2] || "status";
+    const options = parseOptions(argv.slice(3));
+    if (firewallAction === "install") {
+      const status = await installControllerFirewall({ port: options.port });
+      console.log(`Installed Windows Firewall rule ${status.name} · TCP ${status.port} · ${status.profile || "Private,Domain"}`);
+      return;
+    }
+    if (firewallAction === "remove") {
+      const status = await removeControllerFirewall();
+      console.log(status.removed ? `Removed Windows Firewall rule ${status.name}` : `Windows Firewall rule ${status.name} was not installed`);
+      return;
+    }
+    if (firewallAction === "status") {
+      const status = await controllerFirewallStatus();
+      console.log(status.installed ? `Windows Firewall rule ${status.name} is ${status.enabled ? "enabled" : "disabled"} · TCP ${status.port || "—"} · ${status.profile || "—"}` : "Machora Windows Firewall rule is not installed");
+      if (status.error) console.log(`Detail: ${status.error}`);
+      return;
+    }
+    throw new Error("Usage: machora controller firewall <install|status|remove> [--port 4178]");
   }
   if (command === "host" && action === "list") {
     const hosts = await listHosts();
@@ -176,6 +216,30 @@ async function main(argv) {
     console.log(`Hook: ${updated.hook.path}`);
     return;
   }
+  if (command === "hooks" && action === "status") {
+    const options = parseOptions(argv.slice(2));
+    const project = await findProject(options.path || process.cwd());
+    const status = await projectGitHookStatus(project);
+    console.log(`Git push hook for ${project.name}: ${status.status}${status.detail ? ` · ${status.detail}` : ""}`);
+    if (status.path) console.log(`Hook: ${status.path}`);
+    return;
+  }
+  if (command === "hooks" && ["uninstall", "remove"].includes(action)) {
+    const options = parseOptions(argv.slice(2));
+    const project = await findProject(options.path || process.cwd());
+    const updated = await uninstallProjectGitHook(project);
+    console.log(`Removed Machora Git push hook for ${project.name}${updated.restoredOriginal ? "; restored the original hook" : ""}`);
+    return;
+  }
+  if (command === "hook" && action === "dispatch-push") {
+    const options = parseOptions(argv.slice(2));
+    if (!options.project || !options.repository || !options.remote || !options.input || !options.log) throw new Error("Incomplete internal Git hook dispatch");
+    await dispatchGitPushConfirmation({
+      projectId: options.project, repository: options.repository, remote: options.remote,
+      inputPath: options.input, logPath: options.log,
+    });
+    return;
+  }
   if (command === "hook" && action === "confirm-push") {
     const options = parseOptions(argv.slice(2));
     if (!options.project || !options.repository || !options.remote || !options.input) throw new Error("Incomplete internal Git hook invocation");
@@ -225,7 +289,7 @@ function parseOptions(items) {
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
     if (!item.startsWith("--")) throw new Error(`Unexpected argument: ${item}`);
-    if (["--json", "--force", "--no-open"].includes(item)) { options[item.slice(2)] = true; continue; }
+    if (["--json", "--force", "--no-open", "--firewall"].includes(item)) { options[item.slice(2)] = true; continue; }
     const value = items[index + 1];
     if (!value || value.startsWith("--")) throw new Error(`Missing value for ${item}`);
     options[item.slice(2)] = value; index += 1;
@@ -240,13 +304,21 @@ async function findProject(inputPath) {
   return project;
 }
 
+function controllerServiceDescription(status) {
+  if (status.serviceType === "windows-service") return `Windows Service · ${status.serviceLabel} · ${status.serviceDefinitionPath}`;
+  if (status.serviceType === "scheduled-task") return `Windows Scheduled Task · ${status.scheduledTaskName || status.serviceLabel} · ${status.taskDefinitionPath}`;
+  return `macOS LaunchAgent · ${status.plistPath}`;
+}
+
 function printHelp() {
   console.log(`Machora — orchestrate development across your machines
 
 Commands:
   machora dashboard [--no-open]
   machora controller install [--migrate-from <path>] [--port 4178] [--advertise http://192.168.1.42:4178]
+                             [--firewall] [--service scheduled-task|windows-service] [--winsw <path>]
   machora controller status|start|stop|restart
+  machora controller firewall <install|status|remove> [--port 4178]
   machora host add <alias> [--workspace ~/Code] [--os auto|macos|linux|windows]
   machora host add <alias> --address <hostname-or-ip> [--workspace ...] [--os ...]
   machora host list
@@ -257,12 +329,12 @@ Commands:
   machora project sync [--path .]
   machora project run <install|test|build|dev|deploy> [--path .]
   machora project policy [--path .]
-  machora hooks install [--path .]
+  machora hooks install|status|uninstall [--path .]
   machora project list
   machora project remove [<name|path>]
   machora job status <job-id> [--json]
   machora job list [--status queued|running|succeeded|failed] [--json]
   machora server [--port 4178] [--host 0.0.0.0] [--advertise http://192.168.1.42:4178]
 
-Configuration is stored in ~/.machora/config.json.`);
+Configuration is stored in ${process.platform === "win32" ? "%LOCALAPPDATA%\\Machora\\config.json" : "~/.machora/config.json"}.`);
 }

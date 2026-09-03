@@ -37,8 +37,13 @@ test("assigns a local Git project through the controller-only API", async () => 
   assert.equal(result.project.skill.status, "installed"); assert.equal(result.job.status, "queued");
   const projects = await fetch(`${origin}/api/projects`).then((projectResponse) => projectResponse.json());
   assert.equal(projects.projects.length, 1); assert.equal(projects.projects[0].projectType, "Next.js"); assert.equal(projects.projects[0].commands.build, "pnpm run build");
-  const updateCommands = await fetch(`${origin}/api/projects/${result.project.id}/commands`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ commands: { test: "pnpm run test:ci" } }) });
-  assert.equal(updateCommands.status, 200); assert.equal((await updateCommands.json()).project.commands.test, "pnpm run test:ci");
+  const updateCommands = await fetch(`${origin}/api/projects/${result.project.id}/commands`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ commands: { test: "pnpm run test:ci" }, devPort: 3400, devPortSource: "custom" }) });
+  assert.equal(updateCommands.status, 200);
+  const updatedProject = (await updateCommands.json()).project;
+  assert.equal(updatedProject.commands.test, "pnpm run test:ci"); assert.equal(updatedProject.devPort, 3400); assert.equal(updatedProject.devPortSource, "custom");
+  const resetPort = await fetch(`${origin}/api/projects/${result.project.id}/commands`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ commands: {}, devPortSource: "detected" }) });
+  const resetProject = (await resetPort.json()).project;
+  assert.equal(resetPort.status, 200); assert.equal(resetProject.devPort, 3000); assert.equal(resetProject.devPortSource, "detected");
   const updateAutomations = await fetch(`${origin}/api/projects/${result.project.id}/automations`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ rules: [{ event: "tag-push", pattern: "v*", operation: "build", enabled: true }] }) });
   const automated = await updateAutomations.json();
   assert.equal(updateAutomations.status, 200, automated.error); assert.equal(automated.project.automations.rules[0].operation, "build");
@@ -67,7 +72,7 @@ test("serves the Agent and a valid POSIX installer", async () => {
 
 test("serves Agent update commands and a valid POSIX updater", async () => {
   const health = await fetch(`${origin}/api/health`).then((response) => response.json());
-  assert.equal(health.agentVersion, "0.8.1");
+  assert.equal(health.agentVersion, "0.9.0");
   assert.match(health.updateCommands.posix, /192\.168\.50\.10:4178\/update\.sh/);
   const response = await fetch(`${origin}/update.sh`);
   const script = await response.text();

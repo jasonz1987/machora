@@ -10,16 +10,16 @@
     Windows PCs, and Linux servers into Git-native task machines.
   </p>
   <p>
-    <img alt="Version 0.8.1" src="https://img.shields.io/badge/version-0.8.1-9cf43a?style=flat-square&labelColor=151a1d" />
+    <img alt="Version 0.9.0" src="https://img.shields.io/badge/version-0.9.0-9cf43a?style=flat-square&labelColor=151a1d" />
     <img alt="Node.js 20 or newer" src="https://img.shields.io/badge/Node.js-20%2B-9cf43a?style=flat-square&labelColor=151a1d" />
-    <img alt="Controller on macOS" src="https://img.shields.io/badge/controller-macOS-f2f5f3?style=flat-square&labelColor=151a1d" />
+    <img alt="Controller on macOS and Windows" src="https://img.shields.io/badge/controller-macOS%20%7C%20Windows-f2f5f3?style=flat-square&labelColor=151a1d" />
     <img alt="Agents on macOS, Linux, and Windows" src="https://img.shields.io/badge/agents-macOS%20%7C%20Linux%20%7C%20Windows-f2f5f3?style=flat-square&labelColor=151a1d" />
     <img alt="Early alpha" src="https://img.shields.io/badge/status-early%20alpha-ffc857?style=flat-square&labelColor=151a1d" />
   </p>
 </div>
 
 > [!IMPORTANT]
-> Machora is currently an early alpha intended for trusted personal LAN, VPN, or Tailscale environments. The persistent controller installer currently targets macOS; task-machine Agents support macOS, Linux, and Windows.
+> Machora is currently an early alpha intended for trusted personal LAN, VPN, or Tailscale environments. Persistent controller installation supports macOS LaunchAgents, current-user Windows Scheduled Tasks, and an optional WinSW-backed Windows Service; task-machine Agents support macOS, Linux, and Windows.
 
 ## Contents
 
@@ -82,7 +82,7 @@ flowchart LR
         Dashboard["React dashboard<br/>src/App.jsx"]
         HTTP["HTTP server + Agent API<br/>lib/controller.mjs"]
         Core["Controller core<br/>store · project inspector · Git Hooks · notifier"]
-        Config[("~/.machora/config.json<br/>Hosts · Projects · Jobs · Notifications")]
+        Config[("Controller data<br/>~/.machora or %LOCALAPPDATA%\\Machora")]
 
         CLI -->|"direct local call"| Core
         Dashboard -->|"/api/*"| HTTP
@@ -184,12 +184,12 @@ An `install` operation runs Git sync and the install command itself. Other opera
 
 ### Controller machine
 
-- macOS for `machora controller install` and LaunchAgent management
+- macOS or Windows for persistent `machora controller install` service management
 - Node.js 20 or newer
 - Git
 - a LAN, VPN, or Tailscale address reachable by task machines
 
-The controller can also be started manually from source on other Node.js platforms, but the formal persistent controller installer is currently macOS-only.
+The controller can also be started manually from source on Linux. Linux persistent controller service installation is not part of this release.
 
 ### Task machines
 
@@ -213,18 +213,30 @@ node bin/machora.mjs controller install \
   --advertise http://192.168.1.42:4178
 ```
 
+Windows PowerShell uses the same CLI arguments:
+
+```powershell
+node .\bin\machora.mjs controller install --advertise http://192.168.1.42:4178
+```
+
+To also create a restricted Windows Defender Firewall rule, open PowerShell as Administrator and add `--firewall`:
+
+```powershell
+node .\bin\machora.mjs controller install --advertise http://192.168.1.42:4178 --firewall
+```
+
 Replace `192.168.1.42` with the controller address that task machines can reach. The installer:
 
-- copies a self-contained runtime to `~/.machora/app`;
-- stores controller data in `~/.machora/config.json`;
-- installs a macOS LaunchAgent with automatic startup and crash restart;
-- installs `~/.local/bin/machora` and, when safely writable, `/usr/local/bin/machora`;
+- copies a self-contained runtime beneath `~/.machora` on macOS or `%LOCALAPPDATA%\Machora` on Windows;
+- stores controller data separately from the source checkout;
+- installs a macOS LaunchAgent or current-user Windows Scheduled Task with login startup and crash restart;
+- installs a persistent `machora` CLI wrapper and adds its directory to the Windows user `PATH` when applicable;
 - refreshes persistent Git Hook and AI-policy paths for existing projects.
 
-No `sudo` is required.
+The default Scheduled Task installation does not require `sudo` or an Administrator terminal. Open a new Windows terminal after the first installation so the updated user `PATH` is visible. Firewall and Windows Service installation are explicit administrator-only options.
 
 > [!NOTE]
-> Existing `rdev` installations are migrated automatically. The installer copies controller data from `~/.rdev` when `~/.machora` has no configuration, replaces the legacy controller LaunchAgent, and refreshes project Skills and Git Hooks. The deprecated `rdev` command remains as a compatibility alias. Existing task-machine Agents can continue from `.rdev-agent`; newly enrolled Agents use `.machora-agent`.
+> Existing `rdev` installations are migrated automatically. On macOS, the installer copies controller data from `~/.rdev` when `~/.machora` has no configuration and replaces the legacy LaunchAgent. On Windows it also migrates controller data previously created manually in `~/.machora` or `~/.rdev` into `%LOCALAPPDATA%\Machora`. The deprecated `rdev` command remains as a compatibility alias. Existing task-machine Agents can continue from `.rdev-agent`; newly enrolled Agents use `.machora-agent`.
 
 ### 2. Open the dashboard
 
@@ -358,7 +370,32 @@ machora controller restart
 | `--host <address>` | `0.0.0.0` | Interface address on which the controller listens. |
 | `--advertise <url>` | auto-detected LAN URL | URL embedded in task-machine installation and update commands. |
 | `--migrate-from <path>` | `MACHORA_CONFIG_DIR`, legacy `RDEV_CONFIG_DIR`, or `~/.rdev` | Copy an existing `config.json` and Hook logs into `~/.machora`. The source is not deleted. |
+| `--firewall` | off | Windows only: replace Machora's inbound rule with one scoped to the selected Node executable, TCP port, and Private/Domain profiles. Requires Administrator PowerShell. |
+| `--service <mode>` | `scheduled-task` | Windows only: use `scheduled-task` or the optional administrator-level `windows-service`. |
+| `--winsw <path>` | verified download | Windows Service only: use a local WinSW executable instead of downloading the pinned stable wrapper. |
 | `--force` | off | Replace a conflicting destination configuration and permit replacement of a conflicting global CLI wrapper. Use carefully. |
+
+On Windows, installation registers the current-user **Machora Controller** Scheduled Task by default. `status`, `start`, `stop`, and `restart` use the selected service manager and also probe the configured HTTP port. A listening port that does not answer Machora's health endpoint is reported as a conflict instead of being treated as a running controller.
+
+Firewall management can also be run independently:
+
+```powershell
+# Run these commands from Administrator PowerShell.
+machora controller firewall install
+machora controller firewall status
+machora controller firewall remove
+```
+
+The rule is named `Machora.Controller`, allows only the configured Node executable and TCP controller port, and applies only to Private and Domain profiles.
+
+For a machine that must run the controller before any user signs in, install an administrator-level Windows Service:
+
+```powershell
+# Run from Administrator PowerShell.
+machora controller install --service windows-service --firewall
+```
+
+Machora downloads WinSW 2.12.0 from its official GitHub release and verifies the pinned SHA-256 digest before installing it. Use `--winsw C:\path\to\WinSW-x64.exe` for an offline or organization-approved wrapper. Re-running `controller install --service scheduled-task` switches back to the default logged-in-user mode. A Windows Service runs in Session 0, so browser folder pickers and native clickable notifications require Scheduled Task mode; Jobs and dashboard notifications continue to work in both modes.
 
 Examples:
 
@@ -383,7 +420,7 @@ machora server [--port <port>] [--host <address>] [--advertise <url>]
 | `--host <address>` | `0.0.0.0` | Listen address. |
 | `--advertise <url>` | auto-detected LAN URL | Public controller origin given to task machines. |
 
-`serve` and `ui` are aliases for `server`. This foreground mode is useful while developing Machora itself; use `controller install` for the persistent macOS service.
+`serve` and `ui` are aliases for `server`. This foreground mode is useful while developing Machora itself; use `controller install` for the persistent macOS or Windows service.
 
 ### Hosts
 
@@ -456,9 +493,11 @@ machora project policy --path ~/Code/api
 
 ```text
 machora hooks install [--path <path>]
+machora hooks status [--path <path>]
+machora hooks uninstall [--path <path>]
 ```
 
-Installs or refreshes Machora's managed `pre-push` Hook. If a Hook already exists, Machora preserves it as `pre-push.machora-original` and invokes it before scheduling its own background confirmation.
+Installs or refreshes Machora's managed `pre-push` Hook. If a Hook already exists, Machora preserves it as `pre-push.machora-original` and invokes it before scheduling its own background confirmation. The managed Hook now hands confirmation to a detached Node process, which works consistently in POSIX shells and Git for Windows without relying on `nohup`. `status` detects stale managed Hooks; `uninstall` removes only Machora's Hook and restores the preserved Hook.
 
 Git trigger rules themselves are configured in the project's dashboard. A rule contains:
 
@@ -524,7 +563,7 @@ Machora currently detects and proposes commands for:
 
 | Project type | Detection | Typical commands |
 | --- | --- | --- |
-| Next.js / Vite / React / Node.js | `package.json`, dependencies, scripts, lockfiles | npm, pnpm, Yarn, or Bun install/test/build/dev scripts |
+| Next.js / Umi / Vite / SvelteKit / Astro / Angular / React / Node.js | `package.json`, dependencies, scripts, lockfiles | npm, pnpm, Yarn, or Bun install/test/build/dev scripts |
 | Flutter | `pubspec.yaml` | `flutter pub get`, `flutter test`, web-server preview |
 | Java / Maven | `pom.xml` | dependency download, test, package |
 | Java / Gradle | `build.gradle` or `build.gradle.kts` | wrapper dependencies, test, build |
@@ -556,7 +595,9 @@ Project operations automatically use the project's configured install command as
 
 ### Dev previews
 
-A `dev` Job starts a detached process on the task machine. Machora applies package-manager-aware argument forwarding, chooses the detected/default project port, binds the preview to `0.0.0.0` where supported, and returns a URL based on the task-machine address. The result also stores the process ID and initial log path.
+A `dev` Job starts a detached process on the task machine. Machora applies package-manager-aware argument forwarding, chooses the detected framework port, binds the preview to `0.0.0.0` where supported, and returns a URL based on the task-machine address. Current defaults include Next.js and Create React App on `3000`, Umi on `8000`, Vite and SvelteKit on `5173`, Astro on `4321`, and Angular on `4200`.
+
+The project Commands panel can override the preview port and later restore the detected value with **Use auto**. Generic React and Node.js projects do not receive a forced `PORT` value unless the user configures one, so their own server defaults remain authoritative.
 
 Preview stop/restart controls and continuous log streaming are not implemented yet.
 
@@ -621,17 +662,24 @@ At Agent startup, Machora merges the persistent service environment with the use
 
 ### Controller
 
-| Path | Purpose |
-| --- | --- |
-| `~/.machora/config.json` | Hosts, projects, Jobs, notifications, and enrollment data. |
-| `~/.machora/controller.json` | Installed controller port, host, and advertised URL. |
-| `~/.machora/app/` | Self-contained installed controller runtime. |
-| `~/.machora/logs/controller.log` | Controller standard output. |
-| `~/.machora/logs/controller-error.log` | Controller errors. |
-| `~/.machora/hooks/` | Background Git Hook confirmation logs. |
-| `~/Library/LaunchAgents/dev.machora.controller.plist` | macOS controller LaunchAgent. |
-| `~/.local/bin/machora` | User-local CLI wrapper. |
-| `/usr/local/bin/machora` | Global wrapper when safely writable. |
+| Platform | Path | Purpose |
+| --- | --- | --- |
+| macOS | `~/.machora/config.json` | Hosts, projects, Jobs, notifications, and enrollment data. |
+| macOS | `~/.machora/controller.json` | Installed controller port, host, and advertised URL. |
+| macOS | `~/.machora/app/` | Self-contained installed controller runtime. |
+| macOS | `~/.machora/logs/` | Controller standard output and error logs. |
+| macOS | `~/Library/LaunchAgents/dev.machora.controller.plist` | LaunchAgent definition. |
+| macOS | `~/.local/bin/machora` | User-local CLI wrapper. |
+| Windows | `%LOCALAPPDATA%\Machora\config.json` | Hosts, projects, Jobs, notifications, and enrollment data. |
+| Windows | `%LOCALAPPDATA%\Machora\controller.json` | Installed controller port, host, and advertised URL. |
+| Windows | `%LOCALAPPDATA%\Machora\app\` | Self-contained installed controller runtime. |
+| Windows | `%LOCALAPPDATA%\Machora\logs\` | `controller.log` and `controller-error.log`. |
+| Windows | `%LOCALAPPDATA%\Machora\controller-task.xml` | **Machora Controller** Scheduled Task definition. |
+| Windows | `%LOCALAPPDATA%\Machora\machora-controller-service.exe` | Optional, SHA-256-verified WinSW service wrapper. |
+| Windows | `%LOCALAPPDATA%\Machora\machora-controller-service.xml` | Optional **MachoraController** Windows Service definition. |
+| Windows | `%LOCALAPPDATA%\Machora\bin\machora.cmd` | Persistent user CLI wrapper. |
+
+Project Git Hook logs remain in the controller configuration's `hooks` directory. On macOS, `/usr/local/bin/machora` is also installed when that location is safely writable.
 
 ### Task-machine Agent
 
@@ -663,7 +711,7 @@ node bin/machora.mjs controller install \
   --advertise http://CONTROLLER:4178
 ```
 
-Reinstalling refreshes the runtime and restarts the LaunchAgent while retaining `~/.machora/config.json`.
+Reinstalling refreshes the runtime and restarts the LaunchAgent or Scheduled Task while retaining the controller's `config.json`.
 
 ### Agent
 
@@ -691,6 +739,7 @@ The updater preserves the Agent credentials and workspace, replaces only `agent.
 - Reinstall or start the controller with a reachable `--advertise` URL.
 - Confirm the controller is listening on `0.0.0.0`, not only loopback.
 - Check the controller firewall and whether port `4178` is reachable over the LAN/VPN.
+- On Windows, run `machora controller firewall status`; from Administrator PowerShell, run `machora controller firewall install` to create or refresh the restricted Private/Domain rule.
 - Verify locally with `machora dashboard --no-open` and remotely with `curl http://CONTROLLER:4178/api/health`.
 
 ### A task machine is offline
@@ -732,6 +781,16 @@ tail -f ~/.machora/logs/controller.log
 tail -f ~/.machora/logs/controller-error.log
 ```
 
+Windows PowerShell:
+
+```powershell
+machora controller status
+Get-Content "$env:LOCALAPPDATA\Machora\logs\controller.log" -Wait
+Get-Content "$env:LOCALAPPDATA\Machora\logs\controller-error.log" -Wait
+```
+
+The optional Windows Service writes WinSW rolling output, error, and wrapper logs into the same `logs` directory. Use `Get-Service MachoraController` or `machora controller status` to inspect it.
+
 ## Security model
 
 - The default server uses plain HTTP. Use Machora only on a trusted LAN/VPN or place it behind an HTTPS reverse proxy.
@@ -744,7 +803,7 @@ tail -f ~/.machora/logs/controller-error.log
 
 ## Current limitations
 
-- The persistent controller installer supports macOS only.
+- Linux controllers currently require foreground or separately managed service startup; the built-in persistent installer supports macOS and Windows.
 - The controller uses a local JSON store rather than a multi-user database.
 - There is no user authentication or role model for the dashboard.
 - One task machine claims one Job at a time.
@@ -753,6 +812,7 @@ tail -f ~/.machora/logs/controller-error.log
 - Build artifacts are not downloadable from the controller yet.
 - Dev-preview stop/restart controls and continuous log streaming are not implemented.
 - The default network transport is HTTP.
+- Native clickable Windows notifications and native folder selection require the default interactive Scheduled Task mode; Windows Services cannot display desktop UI from Session 0.
 
 ## Roadmap
 
@@ -761,7 +821,7 @@ tail -f ~/.machora/logs/controller-error.log
 - Job cancellation and concurrency controls;
 - richer disk and GPU telemetry;
 - deployment adapters;
-- persistent controller installers for Linux and Windows;
+- persistent controller installer for Linux;
 - optional authenticated HTTPS and multi-user access.
 
 ## Development

@@ -47,3 +47,20 @@ test("does not send a misleading Script Editor notification for a linked macOS J
   assert.equal(notified, false);
   assert.deepEqual(calls, []);
 });
+
+test("keeps a Windows notification alive and opens the matching Job when clicked", async () => {
+  const calls = [];
+  const notified = await notifyJobCompletion(job, {
+    platform: "win32",
+    dashboardOrigin: "http://192.168.1.42:4178",
+    launch: (command, argumentsList) => calls.push({ command, argumentsList }),
+  });
+
+  assert.equal(notified, true);
+  assert.equal(calls[0].command, "powershell.exe");
+  assert.ok(calls[0].argumentsList.includes("-STA"));
+  const script = calls[0].argumentsList.at(-1);
+  assert.match(script, /add_BalloonTipClicked/);
+  assert.match(script, /view=jobs&job=job-123/);
+  assert.match(script, /Start-Process \$url/);
+});

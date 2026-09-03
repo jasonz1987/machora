@@ -5,7 +5,7 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const VERSION = "0.8.1";
+const VERSION = "0.9.0";
 let cachedTools;
 const legacyAgentDirectory = path.join(os.homedir(), ".rdev-agent");
 const defaultAgentDirectory = path.join(os.homedir(), ".machora-agent");
@@ -246,7 +246,7 @@ async function runShell(command, target, timeout, onOutput) {
 }
 
 async function startDevPreview(config, job, target) {
-  const port = Number(job.project?.devPort) || 3000;
+  const port = commandPort(job.command) || normalizePreviewPort(job.project?.devPort);
   const command = devCommand(job.command, job.project?.projectType, port);
   const logsDirectory = path.join(agentDirectory, "jobs");
   await mkdir(logsDirectory, { recursive: true, mode: 0o700 });
@@ -254,9 +254,11 @@ async function startDevPreview(config, job, target) {
   const descriptor = openSync(logPath, "a");
   const shell = os.platform() === "win32" ? (process.env.ComSpec || "cmd.exe") : "/bin/sh";
   const args = os.platform() === "win32" ? ["/d", "/s", "/c", command] : ["-c", command];
+  const previewEnvironment = { ...executionEnvironment, CI: "0", HOST: "0.0.0.0", HOSTNAME: "0.0.0.0" };
+  if (port) previewEnvironment.PORT = String(port);
   const child = spawn(shell, args, {
     cwd: target,
-    env: { ...executionEnvironment, CI: "0", HOST: "0.0.0.0", HOSTNAME: "0.0.0.0", PORT: String(port) },
+    env: previewEnvironment,
     windowsHide: true,
     detached: true,
     stdio: ["ignore", descriptor, descriptor],
@@ -270,10 +272,10 @@ async function startDevPreview(config, job, target) {
   }
   const hostAddress = String(job.project?.hostAddress || "").replace(/^::ffff:/, "");
   const previewHost = hostAddress && !["127.0.0.1", "::1"].includes(hostAddress) ? hostAddress : os.hostname();
-  const previewUrl = `http://${previewHost}:${port}/`;
+  const previewUrl = port ? `http://${previewHost}:${port}/` : null;
   const initialOutput = await readFile(logPath, "utf8").catch(() => "");
   return {
-    output: `${initialOutput.slice(-16 * 1024)}${initialOutput ? "\n" : ""}Preview process ${child.pid} started at ${previewUrl}`,
+    output: `${initialOutput.slice(-16 * 1024)}${initialOutput ? "\n" : ""}Preview process ${child.pid} started${previewUrl ? ` at ${previewUrl}` : " (port managed by the project)"}`,
     result: { action: "dev", exitCode: 0, previewUrl, processId: child.pid, logPath },
   };
 }
@@ -282,9 +284,19 @@ function devCommand(command, projectType, port) {
   const value = String(command || "");
   if (/flutter/i.test(projectType || "") || /--(?:web-)?port\b/.test(value)) return value;
   const separator = /^\s*npm\s+(?:run\s+)?(?:dev|start)\b/.test(value) ? " --" : "";
-  if (/next\.js/i.test(projectType || "") && !/(?:--hostname|-H)\b/.test(value)) return `${value}${separator} --hostname 0.0.0.0 --port ${port}`;
-  if (/(?:vite|react)/i.test(projectType || "") && !/--host\b/.test(value)) return `${value}${separator} --host 0.0.0.0 --port ${port}`;
+  if (/next\.js/i.test(projectType || "") && !/(?:--hostname|-H)\b/.test(value)) return `${value}${separator} --hostname 0.0.0.0${port ? ` --port ${port}` : ""}`;
+  if (/(?:vite|sveltekit|astro|angular)/i.test(projectType || "") && !/--host\b/.test(value)) return `${value}${separator} --host 0.0.0.0${port ? ` --port ${port}` : ""}`;
   return value;
+}
+
+function normalizePreviewPort(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 1 && number <= 65535 ? number : null;
+}
+
+function commandPort(command) {
+  const match = String(command || "").match(/(?:--(?:web-)?port(?:=|\s+)|(?:^|\s)-p\s+)(\d{1,5})(?:\s|$)/);
+  return normalizePreviewPort(match?.[1]);
 }
 
 function renderStageOutput(label, output) {
