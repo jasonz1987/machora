@@ -10,7 +10,7 @@
     Windows PCs, and Linux servers into Git-native task machines.
   </p>
   <p>
-    <img alt="Version 0.9.0" src="https://img.shields.io/badge/version-0.9.0-9cf43a?style=flat-square&labelColor=151a1d" />
+    <img alt="Version 0.11.5" src="https://img.shields.io/badge/version-0.11.5-9cf43a?style=flat-square&labelColor=151a1d" />
     <img alt="Node.js 20 or newer" src="https://img.shields.io/badge/Node.js-20%2B-9cf43a?style=flat-square&labelColor=151a1d" />
     <img alt="Controller on macOS and Windows" src="https://img.shields.io/badge/controller-macOS%20%7C%20Windows-f2f5f3?style=flat-square&labelColor=151a1d" />
     <img alt="Agents on macOS, Linux, and Windows" src="https://img.shields.io/badge/agents-macOS%20%7C%20Linux%20%7C%20Windows-f2f5f3?style=flat-square&labelColor=151a1d" />
@@ -31,6 +31,7 @@
 - [Using the dashboard](#using-the-dashboard)
 - [Project detection](#project-detection)
 - [Job execution details](#job-execution-details)
+- [Deployment targets](#deployment-targets)
 - [Git Hooks](#git-hooks)
 - [AI coding-agent integration](#ai-coding-agent-integration)
 - [Files and service locations](#files-and-service-locations)
@@ -65,7 +66,9 @@ Machora keeps source editing and Git authoring on the controller machine, while 
 | Dev previews | Starts a detached preview process and returns a LAN-accessible URL when possible. |
 | Git push automations | Maps user-defined branch or tag patterns to user-selected project operations. |
 | Host commands | Executes audited commands on a task machine, with confirmation for elevated-risk commands. |
+| Deployment targets | Establishes pinned SSH trust from the controller, then grants or revokes an independent key for each task machine. |
 | Machine visibility | Shows online status, CPU, memory, architecture, workspace, Agent version, and exact development-tool versions. |
+| Isolated runtimes | Queries, installs, verifies, and removes multiple Node.js, Java, and Python versions through an Agent-private `mise`. |
 | AI-aware policy | Installs a local Machora Skill and a Git-excluded `AGENTS.override.md` that route heavy operations to the task machine. |
 | Notifications | Stores completion events, displays in-app toasts, and sends best-effort native controller notifications. |
 | Web dashboard + CLI | Uses the same controller store, whether an action starts from the browser or terminal. |
@@ -82,12 +85,15 @@ flowchart LR
         Dashboard["React dashboard<br/>src/App.jsx"]
         HTTP["HTTP server + Agent API<br/>lib/controller.mjs"]
         Core["Controller core<br/>store · project inspector · Git Hooks · notifier"]
+        Deployments["Deployment providers<br/>SSH trust · authorization lifecycle"]
         Config[("Controller data<br/>~/.machora or %LOCALAPPDATA%\\Machora")]
 
         CLI -->|"direct local call"| Core
         Dashboard -->|"/api/*"| HTTP
         HTTP --> Core
+        HTTP --> Deployments
         Core <--> Config
+        Deployments <--> Config
     end
 
     subgraph TaskMachine["Task machine · macOS / Linux / Windows"]
@@ -100,9 +106,12 @@ flowchart LR
     end
 
     Git[("Git origin<br/>GitHub · GitLab · Codeup · other")]
+    DeployServer[("Deployment server<br/>SSH today · extensible providers")]
 
     HTTP <-->|"heartbeat · claim Job · progress · result"| Agent
     Workspace <-->|"clone · fetch · fast-forward"| Git
+    Deployments -->|"Controller key · pinned fingerprint"| DeployServer
+    Agent -->|"Independent task-machine key"| DeployServer
 ```
 
 The CLI uses controller modules directly, while the dashboard talks to the same store through the local HTTP API. The Agent is the only component installed on a task machine.
@@ -168,7 +177,11 @@ A task machine is any enrolled macOS, Linux, or Windows computer with Node.js 20
 
 ### Project
 
-A project is a local Git repository associated with one task machine. Machora records its origin, branch, detected stack, remote workspace path, editable operation commands, local AI policy, and optional Git push triggers.
+A project is a local Git repository associated with one task machine. Machora records its origin, branch, detected stack, remote workspace path, editable operation commands, optional Node/Java/Python version pins, local AI policy, and optional Git push triggers.
+
+### Managed runtime
+
+Machora bootstraps a checksum-verified `mise` binary inside the Agent's private directory on the first runtime Job. Its data, cache, configuration, and installed tool versions remain isolated from the task-machine user's global environment. Project Jobs load explicitly configured versions without modifying shell profiles or system defaults.
 
 ### Job
 
@@ -179,6 +192,10 @@ Git sync  →  dependency preparation  →  configured operation
 ```
 
 An `install` operation runs Git sync and the install command itself. Other operations may use the configured install command as their dependency-preparation step.
+
+### Deployment target
+
+A deployment target is an external server that task machines may deploy to after an explicit authorization. Controller trust and task-machine trust use separate Ed25519 keys, so revoking one machine does not disrupt another machine or the controller.
 
 ## Requirements
 
@@ -197,7 +214,7 @@ The controller can also be started manually from source on Linux. Linux persiste
 - `curl` on macOS/Linux, or PowerShell on Windows
 - Git
 - credentials that can clone the project's origin when it is private
-- the SDKs required by the project assigned to that machine
+- any platform-native SDKs not managed by Machora; Node.js, Java, and Python project versions can be installed from **Manage runtimes**
 
 ## Quick start
 
@@ -453,6 +470,26 @@ machora host list
 machora host remove ubuntu-ci
 ```
 
+### Runtimes
+
+```text
+machora runtime list <host> [--json]
+machora runtime available <host> <node|java|python>
+machora runtime install <host> <node|java|python>@<version>
+machora runtime verify <host> <node|java|python>@<version>
+machora runtime uninstall <host> <node|java|python>@<version>
+```
+
+Runtime actions are asynchronous Jobs. The first action also installs an Agent-private `mise`; it does not alter the host's global `PATH` or shell profile. Java accepts mise vendor-qualified versions such as `java@temurin-21`.
+
+```bash
+machora runtime available windows-builder node
+machora runtime install windows-builder node@22.18.0
+machora runtime install windows-builder java@temurin-21
+machora runtime verify windows-builder node@22.18.0
+machora runtime list windows-builder
+```
+
 ### Projects
 
 ```text
@@ -462,6 +499,8 @@ machora project list
 machora project status [--path <path>] [--json]
 machora project sync [--path <path>]
 machora project run <operation> [--path <path>]
+machora project runtime set <runtime@version>... [--path <path>]
+machora project runtime clear [node|java|python] [--path <path>]
 machora project policy [--path <path>]
 machora project remove [<id|name|path>]
 ```
@@ -473,6 +512,8 @@ machora project remove [<id|name|path>]
 | `status --json` | Return full machine, command, Skill, Hook, trigger, and Job-count metadata as JSON. |
 | `sync` | Queue a Git clone/fast-forward Job only. |
 | `run <operation>` | Queue one of `install`, `test`, `build`, `dev`, or `deploy`. |
+| `runtime set` | Pin one or more installed `node`, `java`, or `python` versions for every project Job. |
+| `runtime clear` | Return selected runtimes, or all runtimes when omitted, to the task machine's normal environment. |
 | `policy` | Refresh `.agents/skills/machora/SKILL.md`, `AGENTS.override.md`, and persistent Hook paths. |
 | `remove` | Remove the controller association and its Job history. It does not delete the local or remote checkout. |
 | `--path <path>` | Target repository; defaults to the current working directory where supported. |
@@ -486,6 +527,7 @@ machora project set ubuntu-build --path ~/Code/api
 machora project assign ~/Code/ios-app --host ios-builder
 machora project sync --path ~/Code/api
 machora project run build --path ~/Code/api
+machora project runtime set node@22.18.0 python@3.13.7 --path ~/Code/api
 machora project policy --path ~/Code/api
 ```
 
@@ -536,6 +578,7 @@ The dashboard exposes workflows that are intentionally richer than the compact C
 - see online/offline state and heartbeat recency;
 - inspect CPU, memory, address, architecture, workspace, and Agent version;
 - expand the exact detected development-tool versions;
+- open **Manage runtimes** to query, install, verify, or remove isolated Node.js, Java, and Python versions;
 - see the number of active Jobs;
 - open **Run command** from a host row's overflow menu.
 
@@ -545,6 +588,7 @@ The dashboard exposes workflows that are intentionally richer than the compact C
 - assign it to a task machine;
 - review detected framework, language, package manager, and remote path;
 - edit and save `install`, `test`, `build`, `dev`, and `deploy` commands;
+- pin the project to installed Node.js, Java, and Python versions;
 - run an operation or standalone Git sync;
 - configure branch/tag push triggers;
 - inspect local Skill and remote readiness.
@@ -593,6 +637,10 @@ The Agent:
 
 Project operations automatically use the project's configured install command as a preparation stage, except when the selected operation is `install` itself. Flutter projects may also run CocoaPods preparation for an iOS Podfile on macOS. Maven, Gradle, SwiftPM, Go, and Cargo use their detected dependency commands.
 
+### Runtime isolation
+
+Before dependency preparation or the configured operation, the Agent resolves every pinned project runtime through its private `mise` installation. Missing versions fail early with an instruction to install them from **Manage runtimes**. Git synchronization remains independent of runtimes, and projects without pins continue to use the task machine's normal login-shell environment.
+
 ### Dev previews
 
 A `dev` Job starts a detached process on the task machine. Machora applies package-manager-aware argument forwarding, chooses the detected framework port, binds the preview to `0.0.0.0` where supported, and returns a URL based on the task-machine address. Current defaults include Next.js and Create React App on `3000`, Umi on `8000`, Vite and SvelteKit on `5173`, Astro on `4321`, and Angular on `4200`.
@@ -614,6 +662,42 @@ Machora asks for a second confirmation when a command appears to:
 - download and immediately execute remote code.
 
 This classification is a guardrail, not a security sandbox. An enrolled Agent can execute commands with the current task-machine user's permissions.
+
+## Deployment targets
+
+Open **Deployments → Add server** to configure an SSH deployment server.
+
+1. Enter a name, host/IP, port, user, and the password used for initial setup.
+2. Machora connects once and displays the server host-key algorithm and SHA256 fingerprint.
+3. Verify that fingerprint through a trusted channel, then confirm it in the dashboard.
+4. Machora creates a dedicated Controller Ed25519 key, installs only its public key on the server, verifies key-based access, and discards the password without storing it.
+5. Open the target and authorize the task machines that may deploy to it.
+
+Task-machine authorization is asynchronous and appears in **Jobs**:
+
+```text
+Agent creates per-target key → Controller installs public key → Agent verifies pinned SSH access
+```
+
+The Agent stores its private key and a dedicated `known_hosts`/SSH config beneath its own Machora data directory. It adds one managed `Include` line to the current user's standard SSH config, so the alias shown in the dashboard works with ordinary `ssh` and `scp` commands. The private key never passes through the controller. The server receives labeled `authorized_keys` entries so Machora can remove one machine's key precisely.
+
+For example, change a deployment script's server variable to the generated alias:
+
+```bash
+DEPLOY_HOST="machora-production-api-a1b2c3"
+ssh "$DEPLOY_HOST" 'systemctl --user restart toolkk-api'
+scp target/toolkk-api.jar "$DEPLOY_HOST:/srv/toolkk-api/"
+```
+
+Revocation is intentionally server-first:
+
+```text
+Controller removes server public key → Agent removes its local target credential
+```
+
+If local cleanup fails because the task machine is offline, server access is already revoked and the dashboard reports the cleanup error for retry. A target can be deleted only after all task-machine authorizations are removed.
+
+The provider registry lives in `lib/deployment-providers/`. SSH is the first provider; later providers can implement the same probe, bootstrap, authorize, revoke, and remove lifecycle for OSS credentials, cloud identities, or other deployment channels without changing the target model.
 
 ## AI coding-agent integration
 
@@ -715,7 +799,9 @@ Reinstalling refreshes the runtime and restarts the LaunchAgent or Scheduled Tas
 
 ### Agent
 
-The dashboard shows an update command when an Agent is older than the controller's supported Agent version.
+Every host row shows its reported Agent version. When that version is older than the controller, open the host overflow menu or expand **Environment**, then select **Update Agent**. The controller queues an audited Agent-update Job; the task machine downloads the Agent from its enrolled controller, reports that the restart was scheduled, then replaces and restarts the Agent a few seconds later. Re-enrollment is not required.
+
+Controller-managed updates are supported by Agent 0.6.0 and newer. The delayed restart lets older Agents report the Job result before their process is replaced. If the Agent is too old, offline, or cannot run the Job, use the manual recovery command shown under **Environment → Manual recovery command**.
 
 macOS/Linux:
 
@@ -749,7 +835,7 @@ The updater preserves the Agent credentials and workspace, replaces only `agent.
 - Check that the task machine can reach the controller URL stored in its Agent `config.json`.
 - Restart the platform service or run the Agent update command.
 
-A host is shown as offline after 45 seconds without a heartbeat.
+A host stays `Online` for the first 30 seconds after its latest heartbeat, changes to `Degraded` while the heartbeat is 30–90 seconds late, and becomes `Offline` after 90 seconds. Agent heartbeats use a 10-second request timeout with 2/5/10-second retry backoff. Runtime inventory is cached, refreshed every five minutes, and refreshed immediately after runtime changes instead of blocking every heartbeat.
 
 ### A command exists in Terminal but the Agent cannot find it
 

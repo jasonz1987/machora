@@ -80,3 +80,21 @@ test("does not force a port for an unrecognized React setup", async () => {
   assert.equal(project.projectType, "React");
   assert.equal(project.devPort, null);
 });
+
+test("detects declared Node and Java build requirements", async () => {
+  const nodeProject = await inspectLocalProject(repository);
+  assert.deepEqual(nodeProject.requirements.map((item) => item.id), ["node", "pnpm"]);
+
+  const javaRepository = path.join(temporaryDirectory, "sample-java-app");
+  await mkdir(javaRepository);
+  execFileSync("git", ["init", "-b", "main", javaRepository]);
+  execFileSync("git", ["-C", javaRepository, "config", "user.email", "machora@example.test"]);
+  execFileSync("git", ["-C", javaRepository, "config", "user.name", "machora test"]);
+  await writeFile(path.join(javaRepository, "pom.xml"), "<project><properties><java.version>17</java.version><maven.compiler.source>17</maven.compiler.source></properties></project>\n");
+  execFileSync("git", ["-C", javaRepository, "add", "pom.xml"]);
+  execFileSync("git", ["-C", javaRepository, "commit", "-m", "initial"]);
+  execFileSync("git", ["-C", javaRepository, "remote", "add", "origin", "git@example.test:team/java.git"]);
+  const javaProject = await inspectLocalProject(javaRepository);
+  assert.equal(javaProject.projectType, "Java / Maven");
+  assert.deepEqual(javaProject.requirements.map((item) => [item.id, item.version]), [["java", "17"], ["mvn", null]]);
+});

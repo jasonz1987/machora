@@ -31,6 +31,8 @@ test("installs a self-contained macOS controller runtime, CLI, config migration,
   assert.deepEqual(JSON.parse(await readFile(path.join(installed.configDir, "config.json"), "utf8")).hosts, []);
   assert.equal(await readFile(path.join(installed.configDir, "hooks", "project.log"), "utf8"), "confirmed\n");
   await stat(installed.runtimeCli); await stat(path.join(installed.appDir, "dist", "client", "index.html"));
+  await stat(path.join(installed.appDir, "node_modules", "ssh2", "package.json"));
+  await stat(path.join(installed.appDir, "node_modules", "safer-buffer", "package.json"));
   const wrapper = await readFile(installed.userCliPath, "utf8");
   assert.match(wrapper, /^#!\/bin\/sh/); assert.match(wrapper, new RegExp(installed.runtimeCli.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.equal(installed.commandCliPath, path.join(home, "global-bin", "machora"));

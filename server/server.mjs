@@ -10,6 +10,12 @@ export function startServer({ port = 4178, host = "0.0.0.0", advertise } = {}) {
     getPublicOrigin: () => controllerUrl || `http://${lanAddress}:${server?.address()?.port || port}`,
   });
   server = http.createServer(controller);
+  // Agents heartbeat every ten seconds. Node's five-second default closes the
+  // socket between every heartbeat, which can create enough TIME_WAIT churn to
+  // exhaust ephemeral ports on busy Windows task machines. Keep each
+  // connection alive across several heartbeats instead.
+  server.keepAliveTimeout = 30_000;
+  server.headersTimeout = 35_000;
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, host, () => {

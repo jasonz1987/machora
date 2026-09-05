@@ -1,6 +1,6 @@
 {
   "name": "machora",
-  "version": "0.9.0",
+  "version": "0.11.5",
   "description": "Orchestrate Git-native development jobs across your Macs, Windows PCs, and Linux machines.",
   "author": {
     "name": "Jason.z",
@@ -49,13 +49,14 @@
     "start": "node bin/machora.mjs server",
     "machora": "node bin/machora.mjs",
     "rdev": "node bin/rdev.mjs",
-    "test": "node --test tests/store.test.mjs tests/controller.test.mjs tests/controller-service.test.mjs tests/server.test.mjs tests/agent.test.mjs tests/git-hooks.test.mjs tests/project-inspector.test.mjs tests/project-skill.test.mjs tests/native-dialog.test.mjs tests/dashboard.test.mjs tests/notifier.test.mjs",
-    "test:windows": "node --test --test-concurrency=1 tests/store.test.mjs tests/controller.test.mjs tests/controller-service.test.mjs tests/server.test.mjs tests/git-hooks.test.mjs tests/project-inspector.test.mjs tests/project-skill.test.mjs tests/native-dialog.test.mjs tests/dashboard.test.mjs tests/notifier.test.mjs",
+    "test": "node --test tests/agent-windows.test.mjs tests/store.test.mjs tests/controller.test.mjs tests/controller-service.test.mjs tests/server.test.mjs tests/agent.test.mjs tests/cli.test.mjs tests/git-hooks.test.mjs tests/project-inspector.test.mjs tests/project-onboarding.test.mjs tests/project-skill.test.mjs tests/native-dialog.test.mjs tests/dashboard.test.mjs tests/notifier.test.mjs tests/deployment-providers.test.mjs",
+    "test:windows": "node --test --test-concurrency=1 tests/agent-windows.test.mjs tests/store.test.mjs tests/controller.test.mjs tests/controller-service.test.mjs tests/server.test.mjs tests/cli.test.mjs tests/git-hooks.test.mjs tests/project-inspector.test.mjs tests/project-onboarding.test.mjs tests/project-skill.test.mjs tests/native-dialog.test.mjs tests/dashboard.test.mjs tests/notifier.test.mjs tests/deployment-providers.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "5.0.4",
     "lucide-react": "^0.468.0",
+    "ssh2": "1.17.0",
     "vite": "6.4.2",
     "react": "19.2.0",
     "react-dom": "19.2.0"

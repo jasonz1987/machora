@@ -41,16 +41,19 @@ test("Agent enrolls, creates its workspace, saves credentials, and heartbeats", 
   const loginShell = path.join(temporaryDirectory, "login-shell");
   const fakePnpmArguments = path.join(temporaryDirectory, "fake-pnpm-arguments.txt");
   const fakePnpmPort = path.join(temporaryDirectory, "fake-pnpm-port.txt");
+  const fakeMise = path.join(loginBin, "mise");
+  const fakeMiseState = path.join(temporaryDirectory, "fake-mise-state.txt");
   await mkdir(loginBin);
   await writeFile(path.join(loginBin, "pnpm"), "#!/bin/sh\nif [ \"${1:-}\" = \"--version\" ]; then echo 10.23.0; exit 0; fi\nif [ \"${1:-}\" = \"run\" ] && [ \"${2:-}\" = \"dev\" ]; then printf '%s\\n' \"$@\" > \"$MACHORA_FAKE_PNPM_ARGUMENTS\"; printf '%s' \"${PORT:-}\" > \"$MACHORA_FAKE_PORT\"; sleep 15; exit 0; fi\necho \"unexpected fake pnpm invocation: $*\" >&2\nexit 2\n");
+  await writeFile(fakeMise, "#!/bin/sh\ncase \"${1:-}\" in\n  --version) echo 'mise 2026.9.1';;\n  ls-remote) printf '20.19.0\\n22.18.0\\n24.1.0\\n';;\n  install) [ \"$MISE_HTTP_TIMEOUT\" = '5m' ] || { echo 'missing runtime HTTP timeout' >&2; exit 3; }; [ \"$MISE_HTTP_DOWNLOAD_TIMEOUT\" = '60m' ] || { echo 'missing runtime download timeout' >&2; exit 3; }; [ \"$MISE_HTTP_RETRIES\" = '5' ] || { echo 'missing runtime HTTP retries' >&2; exit 3; }; printf '%s' \"$2\" > \"$MACHORA_FAKE_MISE_STATE\"; echo \"installed $2\";;\n  uninstall) /bin/rm -f \"$MACHORA_FAKE_MISE_STATE\"; echo \"removed $2\";;\n  where) /bin/test \"$(/bin/cat \"$MACHORA_FAKE_MISE_STATE\" 2>/dev/null)\" = \"$2\" || exit 1; echo /managed/$2;;\n  env) shift; [ \"${1:-}\" = \"--json\" ] && shift; printf '{\"MACHORA_FAKE_RUNTIME\":\"%s\"}\\n' \"$*\";;\n  exec) shift; while [ \"${1:-}\" != \"--\" ]; do shift; done; shift; exec \"$@\";;\n  ls) if [ -f \"$MACHORA_FAKE_MISE_STATE\" ]; then value=$(/bin/cat \"$MACHORA_FAKE_MISE_STATE\"); version=${value#node@}; printf '{\"node\":[{\"version\":\"%s\"}]}\\n' \"$version\"; else echo '{}'; fi;;\n  *) echo \"unexpected mise invocation: $*\" >&2; exit 2;;\nesac\n");
   await writeFile(loginShell, "#!/bin/sh\nprintf '\\0__MACHORA_LOGIN_ENV_8E4C2029__\\0'\nprintf 'PATH=%s:%s\\0' \"$MACHORA_AGENT_LOGIN_PATH\" \"$PATH\"\n");
   const gitPath = (await execFileAsync("sh", ["-c", "command -v git"])).stdout.trim();
   await symlink(process.execPath, path.join(loginBin, "node"));
   await symlink(gitPath, path.join(loginBin, "git"));
   await symlink("/bin/sh", path.join(loginBin, "sh"));
   await symlink("/bin/sleep", path.join(loginBin, "sleep"));
-  await chmod(path.join(loginBin, "pnpm"), 0o700); await chmod(loginShell, 0o700);
-  const environment = { ...process.env, PATH: loginBin, MACHORA_AGENT_DIR: agentDirectory, MACHORA_AGENT_LOGIN_PATH: loginBin, MACHORA_FAKE_PNPM_ARGUMENTS: fakePnpmArguments, MACHORA_FAKE_PORT: fakePnpmPort, SHELL: loginShell };
+  await chmod(path.join(loginBin, "pnpm"), 0o700); await chmod(fakeMise, 0o700); await chmod(loginShell, 0o700);
+  const environment = { ...process.env, PATH: loginBin, MACHORA_AGENT_DIR: agentDirectory, MACHORA_MISE_BIN: fakeMise, MACHORA_FAKE_MISE_STATE: fakeMiseState, MACHORA_AGENT_LOGIN_PATH: loginBin, MACHORA_FAKE_PNPM_ARGUMENTS: fakePnpmArguments, MACHORA_FAKE_PORT: fakePnpmPort, SHELL: loginShell };
   const agentFile = path.resolve("agent/agent.mjs");
   await execFileAsync(process.execPath, [agentFile, "enroll", "--controller", origin, "--token", enrollment.enrollment.token], { env: environment });
   await stat(workspace);
@@ -59,7 +62,7 @@ test("Agent enrolls, creates its workspace, saves credentials, and heartbeats", 
   await execFileAsync(process.execPath, [agentFile, "run", "--once"], { env: environment });
   const hosts = await fetch(`${origin}/api/hosts`).then((response) => response.json());
   const host = hosts.hosts.find((item) => item.alias === "agent-e2e");
-  assert.equal(host.status, "online"); assert.equal(host.workspace, workspace); assert.ok(host.capabilities.includes("node")); assert.equal(host.agentVersion, "0.9.0");
+  assert.equal(host.status, "online"); assert.equal(host.workspace, workspace); assert.ok(host.capabilities.includes("node")); assert.equal(host.agentVersion, "0.11.5");
   const node = host.tools.find((tool) => tool.id === "node");
   assert.equal(node.name, "Node.js"); assert.match(node.version, /^\d+\.\d+\.\d+/);
   assert.equal(host.tools.find((tool) => tool.id === "pnpm")?.version, "10.23.0");
@@ -108,10 +111,11 @@ test("Agent enrolls, creates its workspace, saves credentials, and heartbeats", 
   const queuedCommand = await runResponse.json();
   assert.equal(runResponse.status, 202, queuedCommand.error);
   await execFileAsync(process.execPath, [agentFile, "run", "--once"], { env: environment, timeout: 30_000 });
+  const commandJob = await fetch(`${origin}/api/jobs/${queuedCommand.job.id}`).then((response) => response.json());
+  assert.equal(commandJob.job.status, "succeeded", commandJob.job.output || commandJob.job.error);
   assert.equal(await readFile(path.join(workspace, "source-project", "dependencies-ready.txt"), "utf8"), "ok");
   assert.equal(await readFile(path.join(workspace, "source-project", "remote-test.txt"), "utf8"), "ok");
-  const commandJob = await fetch(`${origin}/api/jobs/${queuedCommand.job.id}`).then((response) => response.json());
-  assert.equal(commandJob.job.status, "succeeded"); assert.equal(commandJob.job.result.action, "test");
+  assert.equal(commandJob.job.result.action, "test");
   assert.deepEqual(commandJob.job.steps.map((step) => step.status), ["succeeded", "succeeded", "succeeded"]);
   const jobs = await fetch(`${origin}/api/jobs`).then((response) => response.json());
   assert.ok(jobs.jobs.length >= 3); assert.equal(jobs.jobs[0].project.name, "source-project");
@@ -134,6 +138,40 @@ test("Agent enrolls, creates its workspace, saves credentials, and heartbeats", 
   assert.ok(updatedNotifications.notifications.some((item) => item.jobId === queuedHostCommand.job.id && item.title.includes("agent-e2e")));
   await rm(path.join(workspace, "source-project", "dependencies-ready.txt"), { force: true });
   await rm(path.join(workspace, "source-project", "remote-test.txt"), { force: true });
+
+  const runtimeResponse = await fetch(`${origin}/api/hosts/${host.id}/runtimes`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ operation: "install", tool: "node", version: "22.18.0" }),
+  });
+  const queuedRuntime = await runtimeResponse.json();
+  assert.equal(runtimeResponse.status, 202, queuedRuntime.error);
+  assert.equal(queuedRuntime.job.type, "runtime");
+  await execFileAsync(process.execPath, [agentFile, "run", "--once"], { env: environment, timeout: 30_000 });
+  const runtimeJob = await fetch(`${origin}/api/jobs/${queuedRuntime.job.id}`).then((response) => response.json());
+  assert.equal(runtimeJob.job.status, "succeeded", runtimeJob.job.output || runtimeJob.job.error);
+  const runtimeHost = (await fetch(`${origin}/api/hosts`).then((response) => response.json())).hosts.find((item) => item.id === host.id);
+  assert.equal(runtimeHost.runtimeManager.status, "ready");
+  assert.deepEqual(runtimeHost.runtimes.map(({ tool, version }) => ({ tool, version })), [{ tool: "node", version: "22.18.0" }]);
+
+  const toolchainResponse = await fetch(`${origin}/api/projects/${assigned.project.id}/toolchain`, {
+    method: "PATCH", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ toolchain: { node: "22.18.0" } }),
+  });
+  assert.equal(toolchainResponse.status, 200);
+  assert.equal((await toolchainResponse.json()).project.toolchain.node, "22.18.0");
+  const runtimeCommandResponse = await fetch(`${origin}/api/projects/${assigned.project.id}/commands`, {
+    method: "PATCH", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ commands: { install: "", test: "node -e \"require('fs').writeFileSync('runtime-env.txt', process.env.MACHORA_FAKE_RUNTIME || '')\"" } }),
+  });
+  assert.equal(runtimeCommandResponse.status, 200);
+  const runtimeProjectJob = await fetch(`${origin}/api/projects/${assigned.project.id}/run`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ operation: "test" }),
+  }).then((response) => response.json());
+  await execFileAsync(process.execPath, [agentFile, "run", "--once"], { env: environment, timeout: 30_000 });
+  const completedRuntimeProjectJob = await fetch(`${origin}/api/jobs/${runtimeProjectJob.job.id}`).then((response) => response.json());
+  assert.equal(completedRuntimeProjectJob.job.status, "succeeded", completedRuntimeProjectJob.job.output || completedRuntimeProjectJob.job.error);
+  assert.equal(await readFile(path.join(workspace, "source-project", "runtime-env.txt"), "utf8"), "node@22.18.0");
+  await rm(path.join(workspace, "source-project", "runtime-env.txt"), { force: true });
 
   const devCommandsResponse = await fetch(`${origin}/api/projects/${assigned.project.id}/commands`, {
     method: "PATCH", headers: { "content-type": "application/json" },
